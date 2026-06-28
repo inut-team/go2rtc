@@ -2,6 +2,7 @@ package hls
 
 import (
 	"net/http"
+	"strconv"
 	"sync"
 	"time"
 
@@ -15,7 +16,18 @@ import (
 	"github.com/rs/zerolog"
 )
 
+var defaultDuration float64
+
 func Init() {
+	var conf struct {
+		Mod struct {
+			Duration float64 `yaml:"duration"`
+		} `yaml:"hls"`
+	}
+	conf.Mod.Duration = 0.5
+	app.LoadConfig(&conf)
+	defaultDuration = conf.Mod.Duration
+
 	log = app.GetLogger("hls")
 
 	api.HandleFunc("api/stream.m3u8", handlerStream)
@@ -39,6 +51,33 @@ const keepalive = 5 * time.Second
 var sessions = map[string]*Session{}
 var sessionsMu sync.RWMutex
 
+// hlsDefaultMedias returns the default media list for HLS fMP4 output.
+// Audio sample rates below 16kHz are excluded per Apple HLS Authoring Specification,
+// which prevents newer iOS versions from rejecting streams with 8kHz AAC (e.g. newer Dahua firmware).
+func hlsDefaultMedias() []*core.Media {
+	return []*core.Media{
+		{
+			Kind:      core.KindVideo,
+			Direction: core.DirectionSendonly,
+			Codecs: []*core.Codec{
+				{Name: core.CodecH264},
+				{Name: core.CodecH265},
+			},
+		},
+		{
+			Kind:      core.KindAudio,
+			Direction: core.DirectionSendonly,
+			Codecs: []*core.Codec{
+				{Name: core.CodecAAC, ClockRate: 48000},
+				{Name: core.CodecAAC, ClockRate: 44100},
+				{Name: core.CodecAAC, ClockRate: 32000},
+				{Name: core.CodecAAC, ClockRate: 22050},
+				{Name: core.CodecAAC, ClockRate: 16000},
+			},
+		},
+	}
+}
+
 func handlerStream(w http.ResponseWriter, r *http.Request) {
 	// CORS important for Chromecast
 	w.Header().Set("Access-Control-Allow-Origin", "*")
@@ -58,16 +97,23 @@ func handlerStream(w http.ResponseWriter, r *http.Request) {
 
 	var cons core.Consumer
 
-	// use fMP4 with codecs filter and TS without
-	medias := mp4.ParseQuery(r.URL.Query())
-	if medias != nil {
-		c := mp4.NewConsumer(medias)
-		c.FormatName = "hls/fmp4"
+	query := r.URL.Query()
+
+	if query.Get("format") == "ts" {
+		// Explicit legacy TS request
+		c := mpegts.NewConsumer()
+		c.FormatName = "hls/mpegts"
 		c.WithRequest(r)
 		cons = c
 	} else {
-		c := mpegts.NewConsumer()
-		c.FormatName = "hls/mpegts"
+		// Default: fMP4 — better iOS 17+ compatibility, supports HEVC without issues.
+		// Explicit codec filter from URL overrides the default media list.
+		medias := mp4.ParseQuery(query)
+		if medias == nil {
+			medias = hlsDefaultMedias()
+		}
+		c := mp4.NewConsumer(medias)
+		c.FormatName = "hls/fmp4"
 		c.WithRequest(r)
 		cons = c
 	}
@@ -77,7 +123,14 @@ func handlerStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	session := NewSession(cons)
+	duration := defaultDuration
+	if d := query.Get("duration"); d != "" {
+		if v, err := strconv.ParseFloat(d, 64); err == nil && v > 0 {
+			duration = v
+		}
+	}
+
+	session := NewSession(cons, duration)
 	session.alive = time.AfterFunc(keepalive, func() {
 		sessionsMu.Lock()
 		delete(sessions, session.id)

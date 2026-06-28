@@ -11,6 +11,7 @@ import (
 
 var (
 	Version    string
+	InutBuild  string // "inut.jsc_DDMMYYYY_HHMMSS" injected at build time
 	Modules    []string
 	UserAgent  string
 	ConfigPath string
@@ -42,7 +43,11 @@ func Init() {
 	revision, vcsTime := readRevisionTime()
 
 	if version {
-		fmt.Printf("go2rtc version %s (%s) %s/%s\n", Version, revision, runtime.GOOS, runtime.GOARCH)
+		if InutBuild != "" {
+			fmt.Printf("go2rtc version %s (%s) %s/%s [%s]\n", Version, revision, runtime.GOOS, runtime.GOARCH, InutBuild)
+		} else {
+			fmt.Printf("go2rtc version %s (%s) %s/%s\n", Version, revision, runtime.GOOS, runtime.GOARCH)
+		}
 		os.Exit(0)
 	}
 
@@ -66,12 +71,19 @@ func Init() {
 
 	Info["version"] = Version
 	Info["revision"] = revision
+	if InutBuild != "" {
+		Info["inut_build"] = InutBuild
+	}
 
 	initConfig(config)
 	initLogger()
 
 	platform := fmt.Sprintf("%s/%s", runtime.GOOS, runtime.GOARCH)
-	Logger.Info().Str("version", Version).Str("platform", platform).Str("revision", revision).Msg("go2rtc")
+	if InutBuild != "" {
+		Logger.Info().Str("version", Version).Str("platform", platform).Str("revision", revision).Str("build", InutBuild).Msg("go2rtc")
+	} else {
+		Logger.Info().Str("version", Version).Str("platform", platform).Str("revision", revision).Msg("go2rtc")
+	}
 	Logger.Debug().Str("version", runtime.Version()).Str("vcs.time", vcsTime).Msg("build")
 
 	if ConfigPath != "" {

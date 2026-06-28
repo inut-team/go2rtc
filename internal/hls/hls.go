@@ -45,7 +45,7 @@ func Init() {
 
 var log zerolog.Logger
 
-const keepalive = 5 * time.Second
+const keepalive = 60 * time.Second // extended to survive producer reconnect gaps
 
 // once I saw 404 on MP4 segment, so better to use mutex
 var sessions = map[string]*Session{}

@@ -1,0 +1,15 @@
+api:
+  listen: :1984
+hls:
+  duration: 0.5
+log:
+  level: info
+streams:
+  cam3:              rtsp://admin:123456@video.io.vn:34813/mpeg4?username=admin&password=e10adc3949ba59abbe56e057f20f883e
+  dahua_new:         rtsp://admin:thaoanh1308%40@video.io.vn:51009/cam/realmonitor?channel=1&subtype=0
+  dahua_2024:        rtsp://admin:inut1234@video.io.vn:41723/cam/realmonitor?channel=1&subtype=0
+  imou:              rtsp://admin:L20F7EAB@video.io.vn:33170/cam/realmonitor?channel=1&subtype=0#timeout=30
+  hikvision_smart:   rtsp://admin:Abcd%402026@video.io.vn:33312/Streaming/Channels/1601/
+  hikvision_analog:  rtsp://live:inut161%40@video.io.vn:41238/Streaming/Channels/101/
+  tiandy:            rtsp://live:hihi123%40@video.io.vn:47212/1/1
+

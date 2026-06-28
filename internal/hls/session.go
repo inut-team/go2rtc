@@ -150,10 +150,12 @@ func (s *Session) Init() (init []byte) {
 }
 
 func (s *Session) Segment() []byte {
+	// Wait up to 30s so clients survive producer reconnect (~5-10s) without restarting.
+	// During normal operation segments arrive every ~0.5s so this doesn't add latency.
 	select {
 	case seg := <-s.segments:
 		return seg
-	case <-time.After(3 * time.Second):
+	case <-time.After(30 * time.Second):
 		return nil
 	}
 }

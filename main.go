@@ -51,9 +51,15 @@ import (
 	"github.com/AlexxIT/go2rtc/pkg/shell"
 )
 
+// inutBuildTime is injected at build via: -ldflags "-X main.inutBuildTime=DDMMYYYY_HHMMSS"
+var inutBuildTime string
+
 func main() {
 	// version will be set later from -buildvcs info, this used only as fallback
 	app.Version = "1.9.14"
+	if inutBuildTime != "" {
+		app.InutBuild = "inut.jsc_" + inutBuildTime
+	}
 
 	type module struct {
 		name string

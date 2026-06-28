@@ -14,8 +14,9 @@ const (
 )
 
 const (
-	CodecH264 = "H264" // payloadType: 96
-	CodecH265 = "H265"
+	CodecH264    = "H264" // payloadType: 96
+	CodecH265    = "H265"
+	CodecH265HEV = "H265hev1" // H265 with in-band params (hev1 box, no sprop in SDP)
 	CodecVP8  = "VP8"
 	CodecVP9  = "VP9"
 	CodecAV1  = "AV1"

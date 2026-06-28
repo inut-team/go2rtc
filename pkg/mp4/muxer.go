@@ -57,14 +57,17 @@ func (m *Muxer) GetInit() ([]byte, error) {
 
 		case core.CodecH265:
 			vps, sps, pps := h265.GetParameterSet(codec.FmtpLine)
-			// some dummy SPS and PPS not a problem
-			if len(vps) == 0 {
+			hasRealParams := len(vps) > 0 && len(sps) > 0 && len(pps) > 0
+
+			// codecTag selects hvc1 (params in hvcC, needs real sprop) vs hev1 (in-band params).
+			// hvc1 + dummy params = wrong iOS decoder config → artifacts.
+			// hev1 = iOS reads real params from the stream NALUs → correct.
+			codecTag := core.CodecH265 // hvc1
+			if !hasRealParams {
+				// No sprop in SDP: fall back to dummy params + hev1 so iOS uses in-band params.
+				codecTag = core.CodecH265HEV // hev1
 				vps = []byte{0x40, 0x01, 0x0c, 0x01, 0xff, 0xff, 0x01, 0x40, 0x00, 0x00, 0x03, 0x00, 0x00, 0x03, 0x00, 0x00, 0x03, 0x00, 0x00, 0x03, 0x00, 0x99, 0xac, 0x09}
-			}
-			if len(sps) == 0 {
 				sps = []byte{0x42, 0x01, 0x01, 0x01, 0x40, 0x00, 0x00, 0x03, 0x00, 0x00, 0x03, 0x00, 0x00, 0x03, 0x00, 0x00, 0x03, 0x00, 0x99, 0xa0, 0x01, 0x40, 0x20, 0x05, 0xa1, 0xfe, 0x5a, 0xee, 0x46, 0xc1, 0xae, 0x55, 0x04}
-			}
-			if len(pps) == 0 {
 				pps = []byte{0x44, 0x01, 0xc0, 0x73, 0xc0, 0x4c, 0x90}
 			}
 
@@ -78,7 +81,7 @@ func (m *Muxer) GetInit() ([]byte, error) {
 			}
 
 			mv.WriteVideoTrack(
-				uint32(i+1), codec.Name, codec.ClockRate, width, height, h265.EncodeConfig(vps, sps, pps),
+				uint32(i+1), codecTag, codec.ClockRate, width, height, h265.EncodeConfig(vps, sps, pps),
 			)
 
 		case core.CodecAAC:
@@ -136,7 +139,7 @@ func (m *Muxer) GetPayload(trackID byte, packet *rtp.Packet) []byte {
 		} else {
 			flags = iso.SampleVideoNonIFrame
 		}
-	case core.CodecH265:
+	case core.CodecH265, core.CodecH265HEV:
 		if h265.IsKeyframe(packet.Payload) {
 			flags = iso.SampleVideoIFrame
 		} else {

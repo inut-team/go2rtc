@@ -36,7 +36,23 @@ func DecodeConfig(conf []byte) (profile, vps, sps, pps []byte) {
 	return
 }
 
+// stripStartCode removes Annex B start codes (00 00 00 01 or 00 00 01) if present.
+// Some cameras include them in sprop-vps/sps/pps (non-standard per RFC 7798).
+func stripStartCode(b []byte) []byte {
+	if len(b) >= 4 && b[0] == 0 && b[1] == 0 && b[2] == 0 && b[3] == 1 {
+		return b[4:]
+	}
+	if len(b) >= 3 && b[0] == 0 && b[1] == 0 && b[2] == 1 {
+		return b[3:]
+	}
+	return b
+}
+
 func EncodeConfig(vps, sps, pps []byte) []byte {
+	vps = stripStartCode(vps)
+	sps = stripStartCode(sps)
+	pps = stripStartCode(pps)
+
 	vpsSize := uint16(len(vps))
 	spsSize := uint16(len(sps))
 	ppsSize := uint16(len(pps))

@@ -3,14 +3,16 @@ package mp4
 import (
 	"github.com/AlexxIT/go2rtc/pkg/core"
 	"github.com/AlexxIT/go2rtc/pkg/h264"
+	"github.com/AlexxIT/go2rtc/pkg/h265"
 )
 
 const (
-	MimeH264 = "avc1.640029"
-	MimeH265 = "hvc1.1.6.L153.B0"
-	MimeAAC  = "mp4a.40.2"
-	MimeFlac = "flac"
-	MimeOpus = "opus"
+	MimeH264    = "avc1.640029"
+	MimeH265    = "hvc1.1.6.L153.B0" // out-of-band params (sprop present)
+	MimeH265HEV = "hev1.1.6.L153.B0" // in-band params (no sprop in SDP)
+	MimeAAC     = "mp4a.40.2"
+	MimeFlac    = "flac"
+	MimeOpus    = "opus"
 )
 
 func MimeCodecs(codecs []*core.Codec) string {
@@ -25,9 +27,14 @@ func MimeCodecs(codecs []*core.Codec) string {
 		case core.CodecH264:
 			s += "avc1." + h264.GetProfileLevelID(codec.FmtpLine)
 		case core.CodecH265:
-			// H.265 profile=main level=5.1
-			// hvc1 - supported in Safari, hev1 - doesn't, both supported in Chrome
-			s += MimeH265
+			// Use hvc1 (out-of-band, needs real sprop) or hev1 (in-band, no sprop).
+			// MIME must match the actual box type used in the init segment.
+			vps, sps, pps := h265.GetParameterSet(codec.FmtpLine)
+			if len(vps) > 0 && len(sps) > 0 && len(pps) > 0 {
+				s += MimeH265    // hvc1.1.6.L153.B0
+			} else {
+				s += MimeH265HEV // hev1.1.6.L153.B0
+			}
 		case core.CodecAAC:
 			s += MimeAAC
 		case core.CodecOpus:

@@ -11,7 +11,9 @@ func (m *Movie) WriteVideo(codec string, width, height uint16, conf []byte) {
 	case core.CodecH264:
 		m.StartAtom("avc1")
 	case core.CodecH265:
-		m.StartAtom("hvc1") // hvc1 = param sets in hvcC box (init) = Safari/iOS compatible; hev1 = in-band only
+		m.StartAtom("hvc1") // hvc1 = params in hvcC (requires real sprop) = Safari/iOS compatible
+	case core.CodecH265HEV:
+		m.StartAtom("hev1") // hev1 = in-band params; used when camera has no sprop in SDP
 	default:
 		panic("unsupported iso video: " + codec)
 	}
@@ -35,7 +37,7 @@ func (m *Movie) WriteVideo(codec string, width, height uint16, conf []byte) {
 	switch codec {
 	case core.CodecH264:
 		m.StartAtom("avcC")
-	case core.CodecH265:
+	case core.CodecH265, core.CodecH265HEV:
 		m.StartAtom("hvcC")
 	}
 	m.Write(conf)

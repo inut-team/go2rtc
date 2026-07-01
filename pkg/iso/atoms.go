@@ -220,9 +220,26 @@ func (m *Movie) WriteTrackExtend(id uint32) {
 	m.EndAtom()
 }
 
+// WriteEditList adds an edts/elst box so iOS AVFoundation correctly initializes tracks.
+// A single entry with segment_duration=0 (whole presentation) and media_time=0 (start from
+// first sample) is the standard form for live/streaming fMP4 content.
+func (m *Movie) WriteEditList() {
+	m.StartAtom("edts")
+	m.StartAtom("elst")
+	m.Skip(1)                 // version = 0
+	m.Skip(3)                 // flags = 0
+	m.WriteUint32(1)          // entry_count = 1
+	m.Skip(4)                 // segment_duration = 0 (play to end)
+	m.Skip(4)                 // media_time = 0 (start from beginning)
+	m.WriteUint32(0x00010000) // media_rate = 1.0 (16.16 fixed-point)
+	m.EndAtom()               // elst
+	m.EndAtom()               // edts
+}
+
 func (m *Movie) WriteVideoTrack(id uint32, codec string, timescale uint32, width, height uint16, conf []byte) {
 	m.StartAtom(MoovTrak)
 	m.WriteTrackHeader(id, width, height)
+	m.WriteEditList()
 
 	m.StartAtom(MoovTrakMdia)
 	m.WriteMediaHeader(timescale)
@@ -243,6 +260,7 @@ func (m *Movie) WriteVideoTrack(id uint32, codec string, timescale uint32, width
 func (m *Movie) WriteAudioTrack(id uint32, codec string, timescale uint32, channels uint16, conf []byte) {
 	m.StartAtom(MoovTrak)
 	m.WriteTrackHeader(id, 0, 0)
+	m.WriteEditList()
 
 	m.StartAtom(MoovTrakMdia)
 	m.WriteMediaHeader(timescale)

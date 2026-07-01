@@ -15,6 +15,22 @@ type Muxer struct {
 	dts    []uint64
 	pts    []uint32
 	codecs []*core.Codec
+
+	// DelayedInit is true when an H265 track has no sprop params in SDP.
+	// WriteTo must NOT write init immediately; the H265 handler writes real init after
+	// the first keyframe delivers inline VPS/SPS/PPS via ResolveH265Params.
+	DelayedInit bool
+	resolvedVPS []byte
+	resolvedSPS []byte
+	resolvedPPS []byte
+}
+
+// ResolveH265Params stores real VPS/SPS/PPS extracted from the first keyframe.
+// Call this before the second GetInit() in delayed-init mode.
+func (m *Muxer) ResolveH265Params(vps, sps, pps []byte) {
+	m.resolvedVPS = vps
+	m.resolvedSPS = sps
+	m.resolvedPPS = pps
 }
 
 func (m *Muxer) AddTrack(codec *core.Codec) {
@@ -57,18 +73,26 @@ func (m *Muxer) GetInit() ([]byte, error) {
 
 		case core.CodecH265:
 			vps, sps, pps := h265.GetParameterSet(codec.FmtpLine)
-			hasRealParams := len(vps) > 0 && len(sps) > 0 && len(pps) > 0
+			hasSdpParams := len(vps) > 0 && len(sps) > 0 && len(pps) > 0
 
-			// codecTag selects hvc1 (params in hvcC, needs real sprop) vs hev1 (in-band params).
-			// hvc1 + dummy params = wrong iOS decoder config → artifacts.
-			// hev1 = iOS reads real params from the stream NALUs → correct.
-			codecTag := core.CodecH265 // hvc1
-			if !hasRealParams {
-				// No sprop in SDP: fall back to dummy params + hev1 so iOS uses in-band params.
-				codecTag = core.CodecH265HEV // hev1
-				vps = []byte{0x40, 0x01, 0x0c, 0x01, 0xff, 0xff, 0x01, 0x40, 0x00, 0x00, 0x03, 0x00, 0x00, 0x03, 0x00, 0x00, 0x03, 0x00, 0x00, 0x03, 0x00, 0x99, 0xac, 0x09}
-				sps = []byte{0x42, 0x01, 0x01, 0x01, 0x40, 0x00, 0x00, 0x03, 0x00, 0x00, 0x03, 0x00, 0x00, 0x03, 0x00, 0x00, 0x03, 0x00, 0x99, 0xa0, 0x01, 0x40, 0x20, 0x05, 0xa1, 0xfe, 0x5a, 0xee, 0x46, 0xc1, 0xae, 0x55, 0x04}
-				pps = []byte{0x44, 0x01, 0xc0, 0x73, 0xc0, 0x4c, 0x90}
+			// hvc1 = params in hvcC (camera provided real sprop in SDP) → iOS reads from hvcC.
+			// hev1 = params in-band (no sprop in SDP) → iOS reads real params from stream NALUs.
+			// hvc1 + wrong params = green corner/tiles; hev1 with correct tkhd dimensions = correct.
+			var codecTag string
+			if hasSdpParams {
+				codecTag = core.CodecH265 // hvc1
+			} else {
+				codecTag = core.CodecH265HEV // hev1: in-band params
+				if len(m.resolvedVPS) > 0 {
+					// Real params arrived from first keyframe; use them for correct dimensions.
+					vps, sps, pps = m.resolvedVPS, m.resolvedSPS, m.resolvedPPS
+				} else {
+					// Params not yet known; signal delayed init so WriteTo skips writing init now.
+					m.DelayedInit = true
+					vps = []byte{0x40, 0x01, 0x0c, 0x01, 0xff, 0xff, 0x01, 0x40, 0x00, 0x00, 0x03, 0x00, 0x00, 0x03, 0x00, 0x00, 0x03, 0x00, 0x00, 0x03, 0x00, 0x99, 0xac, 0x09}
+					sps = []byte{0x42, 0x01, 0x01, 0x01, 0x40, 0x00, 0x00, 0x03, 0x00, 0x00, 0x03, 0x00, 0x00, 0x03, 0x00, 0x00, 0x03, 0x00, 0x99, 0xa0, 0x01, 0x40, 0x20, 0x05, 0xa1, 0xfe, 0x5a, 0xee, 0x46, 0xc1, 0xae, 0x55, 0x04}
+					pps = []byte{0x44, 0x01, 0xc0, 0x73, 0xc0, 0x4c, 0x90}
+				}
 			}
 
 			var width, height uint16
@@ -132,15 +156,27 @@ func (m *Muxer) GetPayload(trackID byte, packet *rtp.Packet) []byte {
 	// flags important for Apple Finder video preview
 	var flags uint32
 
+	payload := packet.Payload
+
 	switch codec.Name {
 	case core.CodecH264:
-		if h264.IsKeyframe(packet.Payload) {
+		if h264.IsKeyframe(payload) {
 			flags = iso.SampleVideoIFrame
 		} else {
 			flags = iso.SampleVideoNonIFrame
 		}
-	case core.CodecH265, core.CodecH265HEV:
-		if h265.IsKeyframe(packet.Payload) {
+	case core.CodecH265:
+		// hvc1: VPS/SPS/PPS must NOT appear in mdat (ISO 14496-15 §8.3.2.3.1) — they are
+		// stored in hvcC. Inline param sets cause iOS VideoToolbox to reject the sample.
+		if h265.IsKeyframe(payload) {
+			payload = h265.StripParamSets(payload)
+			flags = iso.SampleVideoIFrame
+		} else {
+			flags = iso.SampleVideoNonIFrame
+		}
+	case core.CodecH265HEV:
+		// hev1: VPS/SPS/PPS are delivered in-band before each IDR; keep them.
+		if h265.IsKeyframe(payload) {
 			flags = iso.SampleVideoIFrame
 		} else {
 			flags = iso.SampleVideoNonIFrame
@@ -158,14 +194,14 @@ func (m *Muxer) GetPayload(trackID byte, packet *rtp.Packet) []byte {
 		m.pts[trackID] += duration
 	}
 
-	size := len(packet.Payload)
+	size := len(payload)
 
 	mv := iso.NewMovie(1024 + size)
 	mv.WriteMovieFragment(
 		// ExtensionProfile - wrong place for CTS (supported by mpegts.Demuxer)
 		m.index, uint32(trackID+1), duration, uint32(size), flags, m.dts[trackID], uint32(packet.ExtensionProfile),
 	)
-	mv.WriteData(packet.Payload)
+	mv.WriteData(payload)
 
 	//log.Printf("[MP4] idx:%3d trk:%d dts:%6d cts:%4d dur:%5d time:%10d len:%5d", m.index, trackID+1, m.dts[trackID], packet.SSRC, duration, packet.Timestamp, len(packet.Payload))
 

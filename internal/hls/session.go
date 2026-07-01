@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/AlexxIT/go2rtc/pkg/core"
+	"github.com/AlexxIT/go2rtc/pkg/h265"
 	"github.com/AlexxIT/go2rtc/pkg/mp4"
 )
 
@@ -74,6 +75,11 @@ func (s *Session) Write(p []byte) (n int, err error) {
 	s.mu.Lock()
 	if s.init == nil {
 		s.init = p
+		// For TS: prime buffer with PAT+PMT so the FIRST flushed segment also starts with it.
+		// (For fMP4 the buffer stays nil until actual moof/mdat data arrives.)
+		if _, ok := s.cons.(*mp4.Consumer); !ok {
+			s.buffer = append([]byte(nil), p...)
+		}
 	} else {
 		s.buffer = append(s.buffer, p...)
 	}
@@ -103,16 +109,27 @@ func (s *Session) flush() {
 	}
 }
 
+// Flush sends the current buffer as a segment immediately.
+// Called by mp4.Consumer.OnKeyframe so fMP4 segments always start on an IDR boundary.
+func (s *Session) Flush() {
+	s.flush()
+}
+
 func (s *Session) Run() {
-	ticker := time.NewTicker(time.Duration(s.duration * float64(time.Second)))
-	go func() {
+	if _, ok := s.cons.(*mp4.Consumer); !ok {
+		// TS: use timer-based flushing (HLS.js handles non-IDR segments fine).
+		ticker := time.NewTicker(time.Duration(s.duration * float64(time.Second)))
+		go func() {
+			defer ticker.Stop()
+			for range ticker.C {
+				s.flush()
+			}
+		}()
 		defer ticker.Stop()
-		for range ticker.C {
-			s.flush()
-		}
-	}()
+	}
+	// fMP4: flushing done by OnKeyframe callback, so every segment starts on an IDR boundary
+	// as required by iOS AVFoundation / Apple HLS Authoring Specification for HEVC.
 	_, _ = s.cons.(io.WriterTo).WriteTo(s)
-	ticker.Stop()
 }
 
 func (s *Session) Main() []byte {
@@ -120,12 +137,36 @@ func (s *Session) Main() []byte {
 		Codecs() []*core.Codec
 	}
 
-	codecs := mp4.MimeCodecs(s.cons.(withCodecs).Codecs())
-	codecs = strings.Replace(codecs, mp4.MimeFlac, "fLaC", 1)
+	allCodecs := s.cons.(withCodecs).Codecs()
 
-	// bandwidth important for Safari, codecs useful for smooth playback
+	var streamInf string
+
+	if _, isFMP4 := s.cons.(*mp4.Consumer); isFMP4 {
+		// fMP4: include CODECS so Safari/AVFoundation can select the right decoder.
+		// Apple HLS Authoring Spec requires VIDEO-RANGE and RESOLUTION for HEVC.
+		codecs := mp4.MimeCodecs(allCodecs)
+		codecs = strings.Replace(codecs, mp4.MimeFlac, "fLaC", 1)
+		streamInf = `BANDWIDTH=4000000,CODECS="` + codecs + `"`
+		for _, codec := range allCodecs {
+			if codec.Name == core.CodecH265 {
+				streamInf += `,VIDEO-RANGE=SDR,FRAME-RATE=25.000`
+				if _, sps, _ := h265.GetParameterSet(codec.FmtpLine); len(sps) > 0 {
+					if parsed := h265.DecodeSPS(sps); parsed != nil {
+						streamInf += fmt.Sprintf(`,RESOLUTION=%dx%d`, parsed.Width(), parsed.Height())
+					}
+				}
+				break
+			}
+		}
+	} else {
+		// TS: omit CODECS so HLS.js skips MediaSource.isTypeSupported() for HEVC.
+		// Without CODECS the player downloads segments and lets the video element decide,
+		// matching how FFmpeg-based HLS servers serve HEVC TS streams.
+		streamInf = `BANDWIDTH=4000000`
+	}
+
 	return []byte(`#EXTM3U
-#EXT-X-STREAM-INF:BANDWIDTH=192000,CODECS="` + codecs + `"
+#EXT-X-STREAM-INF:` + streamInf + `
 hls/playlist.m3u8?id=` + s.id)
 }
 
@@ -134,15 +175,13 @@ func (s *Session) Playlist() []byte {
 }
 
 func (s *Session) Init() (init []byte) {
-	for i := 0; i < 60 && init == nil; i++ {
+	for i := 0; i < 300 && init == nil; i++ {
 		if i > 0 {
 			time.Sleep(50 * time.Millisecond)
 		}
 
 		s.mu.Lock()
-		if len(s.buffer) > 0 {
-			init = s.init
-		}
+		init = s.init
 		s.mu.Unlock()
 	}
 

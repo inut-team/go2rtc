@@ -39,6 +39,22 @@ func (s *SPS) Height() uint16 {
 	return uint16(s.pic_height_in_luma_samples)
 }
 
+func (s *SPS) LevelIdc() uint8 {
+	return s.general_level_idc
+}
+
+func (s *SPS) ChromaFormatIdc() uint32 {
+	return s.chroma_format_idc
+}
+
+func (s *SPS) ProfileIdc() uint8 {
+	return s.general_profile_idc
+}
+
+func (s *SPS) CompatFlags() uint32 {
+	return s.general_profile_compatibility_flags
+}
+
 func DecodeSPS(nalu []byte) *SPS {
 	rbsp := bytes.ReplaceAll(nalu[2:], []byte{0, 0, 3}, []byte{0, 0})
 

@@ -91,6 +91,19 @@ func DecodeAVCCWithAUD(src []byte) []byte {
 	return dst
 }
 
+// H.265 AUD: NAL type 35, temporal_id_plus1=1, pic_type=any(2)+stop_bit
+const startH265AUD = StartCode + "\x46\x01\x50"
+
+// DecodeAVCCWithH265AUD converts AVCC to Annex-B and prepends a valid H.265 AUD NAL unit.
+// Use instead of DecodeAVCCWithAUD for H.265 TS streams to avoid "Invalid NAL unit 4" decoder warnings.
+func DecodeAVCCWithH265AUD(src []byte) []byte {
+	dst := make([]byte, len(startH265AUD)+len(src))
+	copy(dst, startH265AUD)
+	copy(dst[len(startH265AUD):], src)
+	DecodeAVCC(dst[len(startH265AUD):], false)
+	return dst
+}
+
 const (
 	h264PFrame = 1
 	h264IFrame = 5

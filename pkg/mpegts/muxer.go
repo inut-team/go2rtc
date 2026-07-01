@@ -46,8 +46,10 @@ func (m *Muxer) GetPayload(pid uint16, timestamp uint32, payload []byte) []byte 
 	pes := m.pes[pid]
 
 	switch pes.StreamType {
-	case StreamTypeH264, StreamTypeH265:
+	case StreamTypeH264:
 		payload = annexb.DecodeAVCCWithAUD(payload)
+	case StreamTypeH265:
+		payload = annexb.DecodeAVCCWithH265AUD(payload)
 	}
 
 	if pes.Timestamp != 0 {

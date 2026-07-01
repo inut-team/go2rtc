@@ -95,25 +95,26 @@ func handlerStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var cons core.Consumer
-
 	query := r.URL.Query()
 
-	if query.Get("format") == "ts" {
-		// Explicit legacy TS request
-		c := mpegts.NewConsumer()
-		c.FormatName = "hls/mpegts"
-		c.WithRequest(r)
-		cons = c
-	} else {
-		// Default: fMP4 — better iOS 17+ compatibility, supports HEVC without issues.
-		// Explicit codec filter from URL overrides the default media list.
+	var cons core.Consumer
+
+	if query.Has("mp4") || query.Get("format") == "mp4" {
+		// fMP4 — for iOS Safari native HLS / Chromecast. Triggered by &mp4 or &format=mp4.
 		medias := mp4.ParseQuery(query)
 		if medias == nil {
 			medias = hlsDefaultMedias()
 		}
 		c := mp4.NewConsumer(medias)
 		c.FormatName = "hls/fmp4"
+		c.WithRequest(r)
+		cons = c
+	} else {
+		// Default: MPEG-TS — HLS.js-compatible for H.264 and H.265.
+		// HLS.js's built-in TS demuxer handles HEVC without needing browser MSE HEVC support,
+		// matching how FFmpeg-based HLS servers behave. fMP4+HEVC only works in Chrome 107+/macOS.
+		c := mpegts.NewConsumer()
+		c.FormatName = "hls/mpegts"
 		c.WithRequest(r)
 		cons = c
 	}
@@ -131,6 +132,13 @@ func handlerStream(w http.ResponseWriter, r *http.Request) {
 	}
 
 	session := NewSession(cons, duration)
+
+	// For fMP4: trigger a segment flush before each keyframe so every segment starts on
+	// an IDR boundary. Required by iOS AVFoundation / Apple HLS Authoring Spec for HEVC.
+	if mp4c, ok := cons.(*mp4.Consumer); ok {
+		mp4c.OnKeyframe = session.Flush
+	}
+
 	session.alive = time.AfterFunc(keepalive, func() {
 		sessionsMu.Lock()
 		delete(sessions, session.id)

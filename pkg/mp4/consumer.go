@@ -15,10 +15,16 @@ import (
 
 type Consumer struct {
 	core.Connection
-	wr    *core.WriteBuffer
-	muxer *Muxer
-	mu    sync.Mutex
-	start bool
+	wr         *core.WriteBuffer
+	muxer      *Muxer
+	mu         sync.Mutex
+	start      bool
+	initWriter io.Writer // set by WriteTo; used by hev1 handler to write real init on first keyframe
+
+	// OnKeyframe is called before writing each keyframe after the first.
+	// HLS session sets this to flush the current segment before the keyframe starts a new one,
+	// ensuring every fMP4 segment begins with an IDR as required by iOS AVFoundation.
+	OnKeyframe func()
 
 	Rotate int `json:"-"`
 	ScaleX int `json:"-"`
@@ -69,11 +75,14 @@ func (c *Consumer) AddTrack(media *core.Media, _ *core.Codec, track *core.Receiv
 	switch track.Codec.Name {
 	case core.CodecH264:
 		handler.Handler = func(packet *rtp.Packet) {
+			isKey := h264.IsKeyframe(packet.Payload)
 			if !c.start {
-				if !h264.IsKeyframe(packet.Payload) {
+				if !isKey {
 					return
 				}
 				c.start = true
+			} else if isKey && c.OnKeyframe != nil {
+				c.OnKeyframe()
 			}
 
 			// important to use Mutex because right fragment order
@@ -93,11 +102,31 @@ func (c *Consumer) AddTrack(media *core.Media, _ *core.Codec, track *core.Receiv
 
 	case core.CodecH265:
 		handler.Handler = func(packet *rtp.Packet) {
+			isKey := h265.IsKeyframe(packet.Payload)
 			if !c.start {
-				if !h265.IsKeyframe(packet.Payload) {
+				if !isKey {
 					return
 				}
+				// For hev1 delayed-init: write real init with correct dimensions before any data.
+				// c.muxer.DelayedInit is set by GetInit() (called from WriteTo) when no sprop params
+				// are in the SDP. initWriter is set by WriteTo just before c.wr.WriteTo blocks.
+				if c.muxer.DelayedInit && c.initWriter != nil {
+					vps, sps, pps := h265.ExtractParamSets(packet.Payload)
+					if len(vps) > 0 && len(sps) > 0 && len(pps) > 0 {
+						c.muxer.ResolveH265Params(vps, sps, pps)
+					}
+					realInit, _ := c.muxer.GetInit()
+					if c.Rotate != 0 {
+						PatchVideoRotate(realInit, c.Rotate)
+					}
+					if c.ScaleX != 0 && c.ScaleY != 0 {
+						PatchVideoScale(realInit, c.ScaleX, c.ScaleY)
+					}
+					_, _ = c.initWriter.Write(realInit)
+				}
 				c.start = true
+			} else if isKey && c.OnKeyframe != nil {
+				c.OnKeyframe()
 			}
 
 			// important to use Mutex because right fragment order
@@ -174,15 +203,22 @@ func (c *Consumer) WriteTo(wr io.Writer) (int64, error) {
 		return 0, err
 	}
 
-	if c.Rotate != 0 {
-		PatchVideoRotate(init, c.Rotate)
-	}
-	if c.ScaleX != 0 && c.ScaleY != 0 {
-		PatchVideoScale(init, c.ScaleX, c.ScaleY)
-	}
-
-	if _, err = wr.Write(init); err != nil {
-		return 0, err
+	if !c.muxer.DelayedInit {
+		// Normal path: write init immediately (camera provided real sprop in SDP).
+		if c.Rotate != 0 {
+			PatchVideoRotate(init, c.Rotate)
+		}
+		if c.ScaleX != 0 && c.ScaleY != 0 {
+			PatchVideoScale(init, c.ScaleX, c.ScaleY)
+		}
+		if _, err = wr.Write(init); err != nil {
+			return 0, err
+		}
+	} else {
+		// hev1 delayed-init path: real VPS/SPS/PPS not yet known (no sprop in SDP).
+		// The H265 handler will write the real init (with correct dimensions) when the
+		// first keyframe arrives carrying inline parameter sets.
+		c.initWriter = wr
 	}
 
 	return c.wr.WriteTo(wr)

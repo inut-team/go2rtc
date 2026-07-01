@@ -60,28 +60,42 @@ func EncodeConfig(vps, sps, pps []byte) []byte {
 	buf := make([]byte, 23+5+vpsSize+5+spsSize+5+ppsSize)
 
 	buf[0] = 1
-	copy(buf[1:], sps[3:6]) // profile
-	buf[21] = 3             // ?
-	buf[22] = 3             // ?
+	copy(buf[1:], sps[3:6]) // general_profile_space/tier/idc + first 2 compat bytes
+	// Fill level and chroma fields from the parsed SPS so iOS VideoToolbox can select the
+	// correct hardware decoder path. Without these, level_idc=0 causes iOS to fall back to
+	// software decode, which cannot keep up with high-resolution HEVC (e.g. 2880×1620).
+	if s := DecodeSPS(sps); s != nil {
+		buf[12] = s.LevelIdc()                     // general_level_idc (e.g. 150 = Level 5.0)
+		buf[13] = 0xF0                             // reserved(4)=1111 | min_spatial_segmentation_idc[11:8]=0
+		buf[15] = 0xFC                             // reserved(6)=111111 | parallelismType=0
+		buf[16] = 0xFC | byte(s.ChromaFormatIdc()) // reserved(6)=111111 | chroma_format_idc
+		buf[17] = 0xF8                             // reserved(5)=11111 | bit_depth_luma_minus8=0
+		buf[18] = 0xF8                             // reserved(5)=11111 | bit_depth_chroma_minus8=0
+	}
+	buf[21] = 3 // lengthSizeMinusOne=3 (4-byte AVCC lengths)
+	buf[22] = 3 // numOfArrays=3 (VPS, SPS, PPS)
 
+	// ISO 14496-15 §8.3.3.1: for hvc1 sample entry, array_completeness (bit 7) MUST be 1.
+	// With it 0, iOS AVFoundation interprets the arrays as incomplete and attempts in-band
+	// parameter set lookup, finds nothing, and fails to initialize the video decoder.
 	b := buf[23:]
 	_ = b[5]
-	b[0] = (vps[0] >> 1) & 0x3F
-	binary.BigEndian.PutUint16(b[1:], 1) // VPS count
+	b[0] = 0x80 | ((vps[0] >> 1) & 0x3F) // array_completeness=1 | nal_unit_type=VPS(32)
+	binary.BigEndian.PutUint16(b[1:], 1)  // VPS count
 	binary.BigEndian.PutUint16(b[3:], vpsSize)
 	copy(b[5:], vps)
 
 	b = buf[23+5+vpsSize:]
 	_ = b[5]
-	b[0] = (sps[0] >> 1) & 0x3F
-	binary.BigEndian.PutUint16(b[1:], 1) // SPS count
+	b[0] = 0x80 | ((sps[0] >> 1) & 0x3F) // array_completeness=1 | nal_unit_type=SPS(33)
+	binary.BigEndian.PutUint16(b[1:], 1)  // SPS count
 	binary.BigEndian.PutUint16(b[3:], spsSize)
 	copy(b[5:], sps)
 
 	b = buf[23+5+vpsSize+5+spsSize:]
 	_ = b[5]
-	b[0] = (pps[0] >> 1) & 0x3F
-	binary.BigEndian.PutUint16(b[1:], 1) // PPS count
+	b[0] = 0x80 | ((pps[0] >> 1) & 0x3F) // array_completeness=1 | nal_unit_type=PPS(34)
+	binary.BigEndian.PutUint16(b[1:], 1)  // PPS count
 	binary.BigEndian.PutUint16(b[3:], ppsSize)
 	copy(b[5:], pps)
 

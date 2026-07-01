@@ -12,4 +12,5 @@ streams:
   hikvision_smart:   rtsp://admin:Abcd%402026@video.io.vn:33312/Streaming/Channels/1601/
   hikvision_analog:  rtsp://live:inut161%40@video.io.vn:41238/Streaming/Channels/101/
   tiandy:            rtsp://live:hihi123%40@video.io.vn:47212/1/1
+  dahua_upgrade:     rtsp://admin:inut1234@video.io.vn:54271/cam/realmonitor?channel=1&subtype=0
 

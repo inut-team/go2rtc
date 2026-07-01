@@ -41,14 +41,26 @@ func (m *Movie) WriteVideo(codec string, width, height uint16, conf []byte) {
 		m.StartAtom("hvcC")
 	}
 	m.Write(conf)
-	m.EndAtom() // AVCC
+	m.EndAtom() // avcC/hvcC
 
 	m.StartAtom("pasp") // Pixel Aspect Ratio
 	m.WriteUint32(1)    // hSpacing
 	m.WriteUint32(1)    // vSpacing
 	m.EndAtom()
 
-	m.EndAtom() // AVC1
+	// colr box: iOS AVFoundation requires explicit color info for HEVC to initialize
+	// the video decoder correctly. Without it, VideoToolbox may produce black output.
+	if codec == core.CodecH265 || codec == core.CodecH265HEV {
+		m.StartAtom("colr")
+		m.WriteString("nclx") // ISO/IEC 14496-12 color type
+		m.WriteUint16(1)      // color_primaries = 1 (BT.709)
+		m.WriteUint16(1)      // transfer_characteristics = 1 (BT.709 SDR)
+		m.WriteUint16(1)      // matrix_coefficients = 1 (BT.709)
+		m.WriteBytes(0x00)    // full_range_flag=0 (limited/studio range) + 7 reserved bits
+		m.EndAtom()
+	}
+
+	m.EndAtom() // hvc1/hev1/avc1
 }
 
 func (m *Movie) WriteAudio(codec string, channels uint16, sampleRate uint32, conf []byte) {

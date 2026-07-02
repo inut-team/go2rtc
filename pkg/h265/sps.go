@@ -75,6 +75,14 @@ func (s *SPS) LevelIdc() uint8 {
 	return s.general_level_idc
 }
 
+func (s *SPS) NumTemporalLayers() uint8 {
+	return s.sps_max_sub_layers_minus1 + 1
+}
+
+func (s *SPS) TemporalIdNested() byte {
+	return s.sps_temporal_id_nesting_flag
+}
+
 func (s *SPS) ChromaFormatIdc() uint32 {
 	return s.chroma_format_idc
 }

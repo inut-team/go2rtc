@@ -64,6 +64,10 @@ func EncodeConfig(vps, sps, pps []byte) []byte {
 	// Fill level and chroma fields from the parsed SPS so iOS VideoToolbox can select the
 	// correct hardware decoder path. Without these, level_idc=0 causes iOS to fall back to
 	// software decode, which cannot keep up with high-resolution HEVC (e.g. 2880×1620).
+	// constantFrameRate(2)=0 | numTemporalLayers(3) | temporalIdNested(1) | lengthSizeMinusOne(2)=3.
+	// numTemporalLayers MUST NOT be 0 ("unknown") — Apple tooling always writes >=1 and
+	// iOS CoreMedia rejects the video track otherwise (audio-only playback symptom).
+	buf[21] = 1<<3 | 1<<2 | 3 // sane default: 1 layer, nested, 4-byte lengths
 	if s := DecodeSPS(sps); s != nil {
 		buf[12] = s.LevelIdc()                     // general_level_idc (e.g. 150 = Level 5.0)
 		buf[13] = 0xF0                             // reserved(4)=1111 | min_spatial_segmentation_idc[11:8]=0
@@ -71,8 +75,8 @@ func EncodeConfig(vps, sps, pps []byte) []byte {
 		buf[16] = 0xFC | byte(s.ChromaFormatIdc()) // reserved(6)=111111 | chroma_format_idc
 		buf[17] = 0xF8                             // reserved(5)=11111 | bit_depth_luma_minus8=0
 		buf[18] = 0xF8                             // reserved(5)=11111 | bit_depth_chroma_minus8=0
+		buf[21] = s.NumTemporalLayers()<<3 | s.TemporalIdNested()<<2 | 3
 	}
-	buf[21] = 3 // lengthSizeMinusOne=3 (4-byte AVCC lengths)
 	buf[22] = 3 // numOfArrays=3 (VPS, SPS, PPS)
 
 	// ISO 14496-15 §8.3.3.1: for hvc1 sample entry, array_completeness (bit 7) MUST be 1.

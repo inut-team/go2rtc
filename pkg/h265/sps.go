@@ -29,14 +29,46 @@ type SPS struct {
 
 	pic_width_in_luma_samples  uint32
 	pic_height_in_luma_samples uint32
+
+	conformance_window_flag byte
+	conf_win_left_offset    uint32
+	conf_win_right_offset   uint32
+	conf_win_top_offset     uint32
+	conf_win_bottom_offset  uint32
 }
 
+// subWH returns SubWidthC/SubHeightC (ITU-T H.265 table 6-1) for cropping.
+func (s *SPS) subWH() (uint32, uint32) {
+	switch s.chroma_format_idc {
+	case 1: // 4:2:0
+		return 2, 2
+	case 2: // 4:2:2
+		return 2, 1
+	default: // monochrome, 4:4:4
+		return 1, 1
+	}
+}
+
+// Width returns the DISPLAY width: coded luma width minus the conformance
+// window. HEVC codes in CTU multiples (e.g. 2880x1624 for a 2880x1620
+// picture); ISO 14496-15 requires the cropped size in the sample entry —
+// iOS VideoToolbox rejects the track when the sizes disagree.
 func (s *SPS) Width() uint16 {
-	return uint16(s.pic_width_in_luma_samples)
+	w := s.pic_width_in_luma_samples
+	if s.conformance_window_flag != 0 {
+		sw, _ := s.subWH()
+		w -= sw * (s.conf_win_left_offset + s.conf_win_right_offset)
+	}
+	return uint16(w)
 }
 
 func (s *SPS) Height() uint16 {
-	return uint16(s.pic_height_in_luma_samples)
+	h := s.pic_height_in_luma_samples
+	if s.conformance_window_flag != 0 {
+		_, sh := s.subWH()
+		h -= sh * (s.conf_win_top_offset + s.conf_win_bottom_offset)
+	}
+	return uint16(h)
 }
 
 func (s *SPS) LevelIdc() uint8 {
@@ -77,6 +109,14 @@ func DecodeSPS(nalu []byte) *SPS {
 
 	s.pic_width_in_luma_samples = r.ReadUEGolomb()
 	s.pic_height_in_luma_samples = r.ReadUEGolomb()
+
+	s.conformance_window_flag = r.ReadBit()
+	if s.conformance_window_flag != 0 {
+		s.conf_win_left_offset = r.ReadUEGolomb()
+		s.conf_win_right_offset = r.ReadUEGolomb()
+		s.conf_win_top_offset = r.ReadUEGolomb()
+		s.conf_win_bottom_offset = r.ReadUEGolomb()
+	}
 
 	//...
 

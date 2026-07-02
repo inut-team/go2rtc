@@ -18,15 +18,30 @@ import (
 
 var defaultDuration float64
 
+// appDurations maps an `?app=<name>` value to its segment duration (seconds),
+// so one stream URL can serve different products (e.g. app=live low-latency
+// 1.1s TS vs app=tiktok default). Configured under hls.apps; app=live has a
+// built-in 1.1s default so livestreaming works without extra config.
+var appDurations map[string]float64
+
 func Init() {
 	var conf struct {
 		Mod struct {
-			Duration float64 `yaml:"duration"`
+			Duration float64            `yaml:"duration"`
+			Apps     map[string]float64 `yaml:"apps"`
 		} `yaml:"hls"`
 	}
 	conf.Mod.Duration = 0.5
 	app.LoadConfig(&conf)
 	defaultDuration = conf.Mod.Duration
+
+	appDurations = conf.Mod.Apps
+	if appDurations == nil {
+		appDurations = map[string]float64{}
+	}
+	if _, ok := appDurations["live"]; !ok {
+		appDurations["live"] = 1.1 // low-latency livestream default
+	}
 
 	log = app.GetLogger("hls")
 
@@ -125,9 +140,14 @@ func handlerStream(w http.ResponseWriter, r *http.Request) {
 	}
 
 	duration := defaultDuration
+	if a := query.Get("app"); a != "" {
+		if d, ok := appDurations[a]; ok && d > 0 {
+			duration = d // named profile (e.g. app=live → 1.1s); unknown app falls back to default
+		}
+	}
 	if d := query.Get("duration"); d != "" {
 		if v, err := strconv.ParseFloat(d, 64); err == nil && v > 0 {
-			duration = v
+			duration = v // explicit override wins over the app profile
 		}
 	}
 

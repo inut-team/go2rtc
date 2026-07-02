@@ -140,15 +140,47 @@ func repackFMP4(buf []byte, seq uint32) []byte {
 		return buf
 	}
 
+	// traf order = trackID order (video track 1 first). Ordering by buffer
+	// appearance put the audio traf first in most segments (audio samples
+	// arrive right after the previous IDR flush) — iOS AVFoundation played
+	// those segments audio-only with black video.
+	for i := 1; i < len(order); i++ {
+		for j := i; j > 0 && order[j] < order[j-1]; j-- {
+			order[j], order[j-1] = order[j-1], order[j]
+		}
+	}
+
+	// Match the fragment shape ffmpeg/Apple tooling produce: tfhd carries
+	// default duration/size/flags, trun lists per-sample sizes only, and the
+	// first video sample is marked sync via first-sample-flags.
+	mode := func(smps []sample) (dur, flags uint32) {
+		durN := map[uint32]int{}
+		for _, s := range smps {
+			durN[s.dur]++
+		}
+		for d, c := range durN {
+			if c > durN[dur] {
+				dur = d
+			}
+		}
+		return dur, smps[len(smps)-1].flags // last sample: steady-state flags
+	}
+
 	// ── sizes ──
-	const mfhdLen, tfhdLen, tfdtLen = 16, 16, 20
+	const mfhdLen, tfhdLen, tfdtLen = 16, 28, 20
+	trunLen := func(n int, firstFlags bool) int {
+		l := 8 + 4 + 4 + 4 + n*4 // verflags+count+data-offset + size*n
+		if firstFlags {
+			l += 4
+		}
+		return l
+	}
 	moofSize := 8 + mfhdLen
 	dataLen := 0
 	for _, tid := range order {
-		n := len(samples[tid])
-		trunLen := 8 + 4 + 4 + 4 + n*16 // verflags+count+data-offset + (dur,size,flags,cts)*n
-		moofSize += 8 + tfhdLen + tfdtLen + trunLen
-		for _, s := range samples[tid] {
+		smps := samples[tid]
+		moofSize += 8 + tfhdLen + tfdtLen + trunLen(len(smps), smps[0].flags != smps[len(smps)-1].flags)
+		for _, s := range smps {
 			dataLen += len(s.data)
 		}
 	}
@@ -169,27 +201,36 @@ func repackFMP4(buf []byte, seq uint32) []byte {
 	for _, tid := range order {
 		smps := samples[tid]
 		n := len(smps)
-		trunLen := 8 + 12 + n*16
-		b4(uint32(8 + tfhdLen + tfdtLen + trunLen))
+		defDur, defFlags := mode(smps)
+		withFirst := smps[0].flags != smps[n-1].flags
+		tl := trunLen(n, withFirst)
+		b4(uint32(8 + tfhdLen + tfdtLen + tl))
 		tag("traf")
 		b4(tfhdLen)
 		tag("tfhd")
-		b4(0x020000) // default-base-is-moof
+		b4(0x020038) // base-is-moof | default duration+size+flags present
 		b4(tid)
+		b4(defDur)
+		b4(uint32(len(smps[0].data)))
+		b4(defFlags)
 		b4(tfdtLen)
 		tag("tfdt")
 		b4(0x01000000) // version 1
 		b8(smps[0].dts)
-		b4(uint32(trunLen))
+		b4(uint32(tl))
 		tag("trun")
-		b4(0x000F01) // data-offset + per-sample duration/size/flags/cts
+		if withFirst {
+			b4(0x000205) // data-offset + first-sample-flags + sample-size
+		} else {
+			b4(0x000201) // data-offset + sample-size
+		}
 		b4(uint32(n))
 		b4(dataOffset)
+		if withFirst {
+			b4(smps[0].flags) // e.g. IDR sync flags on the first video sample
+		}
 		for _, s := range smps {
-			b4(s.dur)
 			b4(uint32(len(s.data)))
-			b4(s.flags)
-			b4(s.cts)
 			dataOffset += uint32(len(s.data))
 		}
 	}

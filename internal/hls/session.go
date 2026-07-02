@@ -20,17 +20,21 @@ import (
 const segWindow = 6
 
 type Session struct {
-	cons     core.Consumer
-	id       string
-	template string
-	init     []byte
-	buffer   []byte
-	segs     map[int][]byte // seq -> segment (last segWindow entries)
-	updated  chan struct{}  // closed+recreated on each flush to wake Segment waiters
-	duration float64
-	seq      int
-	alive    *time.Timer
-	mu       sync.Mutex
+	cons      core.Consumer
+	id        string
+	template  string
+	init      []byte
+	buffer    []byte
+	segs      map[int][]byte  // seq -> segment (last segWindow entries)
+	segDurs   map[int]float64 // seq -> measured real duration in seconds (fMP4)
+	updated   chan struct{}   // closed+recreated on each flush to wake Segment waiters
+	duration  float64
+	seq       int
+	isMP4     bool
+	lastFlush time.Time // wall-clock of the previous flush, to measure GOP length
+	lastDur   float64   // last measured segment duration (estimate for pending segment)
+	alive     *time.Timer
+	mu        sync.Mutex
 }
 
 func NewSession(cons core.Consumer, duration float64) *Session {
@@ -43,6 +47,7 @@ func NewSession(cons core.Consumer, duration float64) *Session {
 		cons:     cons,
 		duration: duration,
 		segs:     map[int][]byte{},
+		segDurs:  map[int]float64{},
 		updated:  make(chan struct{}),
 	}
 
@@ -56,17 +61,10 @@ func NewSession(cons core.Consumer, duration float64) *Session {
 	// At least 3 segments per Apple HLS authoring rules (live playlists with
 	// fewer may be rejected by iOS AVFoundation); also important for Chromecast.
 	if _, ok := cons.(*mp4.Consumer); ok {
-		s.template = `#EXTM3U
-#EXT-X-VERSION:6
-#EXT-X-TARGETDURATION:` + targetDurStr + `
-#EXT-X-MEDIA-SEQUENCE:%d
-#EXT-X-MAP:URI="init.mp4?id=` + s.id + `"
-#EXTINF:` + durStr + `,
-segment.m4s?id=` + s.id + `&n=%d
-#EXTINF:` + durStr + `,
-segment.m4s?id=` + s.id + `&n=%d
-#EXTINF:` + durStr + `,
-segment.m4s?id=` + s.id + `&n=%d`
+		// fMP4 segments are cut on IDR boundaries so their real length is the
+		// camera GOP, not `duration`. The playlist is built dynamically in
+		// Playlist() with measured per-segment EXTINF — no static template.
+		s.isMP4 = true
 	} else {
 		s.template = `#EXTM3U
 #EXT-X-VERSION:3
@@ -106,11 +104,28 @@ func (s *Session) flush() {
 		return
 	}
 	seg := s.buffer
-	if _, ok := s.cons.(*mp4.Consumer); ok {
+	if s.isMP4 {
 		// Merge the per-sample moof/mdat pairs into a single movie fragment —
 		// iOS AVFoundation rejects segments made of ~100 one-frame fragments.
 		seg = repackFMP4(seg, uint32(s.seq)+1)
 		s.buffer = nil
+		// Measure the real segment length from the wall-clock gap between IDR
+		// flushes (≈ camera GOP). EXTINF must reflect this or iOS schedules
+		// fetches on the wrong cadence and stalls every GOP. Clamp so a
+		// producer reconnect gap can't inflate EXTINF/TARGETDURATION.
+		now := time.Now()
+		if !s.lastFlush.IsZero() {
+			d := now.Sub(s.lastFlush).Seconds()
+			if d < 0.5 {
+				d = 0.5
+			} else if d > 8.0 {
+				d = 8.0
+			}
+			s.segDurs[s.seq] = d
+			s.lastDur = d
+			delete(s.segDurs, s.seq-segWindow)
+		}
+		s.lastFlush = now
 	} else {
 		// for TS important to start new segment with PAT/PMT header
 		s.buffer = append([]byte(nil), s.init...)
@@ -194,12 +209,66 @@ func (s *Session) Playlist() []byte {
 	// pending — requests for the pending one long-poll in Segment(n), which
 	// keeps latency low without listing far-future segments.
 	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	start := s.seq - 2
-	s.mu.Unlock()
 	if start < 0 {
 		start = 0
 	}
-	return []byte(fmt.Sprintf(s.template, start, start, start+1, start+2))
+
+	if !s.isMP4 {
+		// TS uses timer-based flushing at exactly s.duration, so the declared
+		// EXTINF is accurate — keep the precomputed static template.
+		return []byte(fmt.Sprintf(s.template, start, start, start+1, start+2))
+	}
+
+	// fMP4: emit the real measured per-segment EXTINF. The not-yet-flushed
+	// pending segment (start+2) has no measurement yet, so estimate it from the
+	// last measured GOP (falling back to the declared duration at startup).
+	dur := func(n int) float64 {
+		if d, ok := s.segDurs[n]; ok {
+			return d
+		}
+		if s.lastDur > 0 {
+			return s.lastDur
+		}
+		return s.duration
+	}
+	d0, d1, d2 := dur(start), dur(start+1), dur(start+2)
+
+	// TARGETDURATION must be >= every listed EXTINF (Apple HLS spec).
+	target := s.duration
+	for _, d := range []float64{d0, d1, d2} {
+		if d > target {
+			target = d
+		}
+	}
+	targetDur := int(math.Ceil(target))
+	if targetDur < 1 {
+		targetDur = 1
+	}
+
+	var b strings.Builder
+	b.WriteString("#EXTM3U\n#EXT-X-VERSION:6\n#EXT-X-TARGETDURATION:")
+	b.WriteString(strconv.Itoa(targetDur))
+	b.WriteString("\n#EXT-X-MEDIA-SEQUENCE:")
+	b.WriteString(strconv.Itoa(start))
+	b.WriteString("\n#EXT-X-MAP:URI=\"init.mp4?id=")
+	b.WriteString(s.id)
+	b.WriteString("\"\n")
+	writeSeg := func(n int, d float64) {
+		b.WriteString("#EXTINF:")
+		b.WriteString(strconv.FormatFloat(d, 'f', 3, 64))
+		b.WriteString(",\nsegment.m4s?id=")
+		b.WriteString(s.id)
+		b.WriteString("&n=")
+		b.WriteString(strconv.Itoa(n))
+		b.WriteByte('\n')
+	}
+	writeSeg(start, d0)
+	writeSeg(start+1, d1)
+	writeSeg(start+2, d2)
+	return []byte(b.String())
 }
 
 func (s *Session) Init() (init []byte) {

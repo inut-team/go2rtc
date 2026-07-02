@@ -21,11 +21,16 @@ CGO_ENABLED=0 $GO build -tags inut.jsc -trimpath -ldflags "-s -w" -o go2rtc_linu
 
 ```yaml
 hls:
-  duration: 2.4   # PHẢI khớp GOP camera. Dahua thường 60 frames @ 25fps = 2.4s
+  duration: 2.4   # chỉ còn là fallback lúc khởi động + EXTINF cho TS. KHÔNG cần khớp GOP nữa.
 ```
 
-fMP4 cắt segment theo IDR (OnKeyframe), nên `duration` chỉ là giá trị khai trong EXTINF —
-đặt đúng GOP thật để Safari lên lịch fetch chính xác.
+fMP4 cắt segment theo IDR (OnKeyframe) nên độ dài segment thật = GOP camera, không phải
+`duration`. Từ 2026-07-02 (fix cam3_2nd) `Playlist()` ĐO độ dài segment thật bằng wall-clock
+giữa 2 lần flush IDR và ghi EXTINF/TARGETDURATION đúng theo đó — nên camera GOP bất kỳ
+(Dahua 2.4s, Xiaomi ~3.3s) đều lên lịch fetch chuẩn, không còn giật. `duration` chỉ dùng làm
+ước lượng cho segment pending lúc mới start + EXTINF cho nhánh TS (TS flush theo timer nên khớp).
+Trước đây EXTINF cố định = `duration`: cam GOP dài hơn (Xiaomi cam3_2nd ~3.3s vs khai 2.4s)
+→ iOS lên lịch sai cadence → **giật/lag mỗi GOP**.
 
 ## Kiến thức xương máu: HLS HEVC trên iOS (chuỗi 6 bug, 2026-07-02)
 

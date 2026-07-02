@@ -6,6 +6,7 @@ log:
   level: info
 streams:
   cam3:              rtsp://admin:123456@video.io.vn:34813/mpeg4?username=admin&password=e10adc3949ba59abbe56e057f20f883e
+  cam3_2nd:          rtsp://admin:123456@video.io.vn:45842/mpeg4
   dahua_new:         rtsp://admin:thaoanh1308%40@video.io.vn:51009/cam/realmonitor?channel=1&subtype=0
   dahua_2024:        rtsp://admin:inut1234@video.io.vn:41723/cam/realmonitor?channel=1&subtype=0
   imou:              rtsp://admin:L20F7EAB@video.io.vn:33170/cam/realmonitor?channel=1&subtype=0#timeout=30

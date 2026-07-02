@@ -150,9 +150,15 @@ func repackFMP4(buf []byte, seq uint32) []byte {
 		}
 	}
 
-	// Match the fragment shape ffmpeg/Apple tooling produce: tfhd carries
-	// default duration/size/flags, trun lists per-sample sizes only, and the
-	// first video sample is marked sync via first-sample-flags.
+	// tfhd carries default size/flags; the first video sample is marked sync via
+	// first-sample-flags. The trun lists per-sample DURATION and size: cameras
+	// like the Xiaomi cam3_2nd are variable-frame-rate (pts deltas alternate
+	// ~20ms/~40ms), so a single default duration would make the segment's media
+	// span (n × default) diverge from the real GOP length that tfdt advances by
+	// — opening a ~1s gap in the media timeline every segment and freezing iOS.
+	// Emitting the true per-sample durations keeps the timeline gapless (this is
+	// what ffmpeg does for VFR). Dahua-style true-CBR streams are unaffected: all
+	// their durations are equal, so per-sample == the old default.
 	mode := func(smps []sample) (dur, flags uint32) {
 		durN := map[uint32]int{}
 		for _, s := range smps {
@@ -169,7 +175,7 @@ func repackFMP4(buf []byte, seq uint32) []byte {
 	// ── sizes ──
 	const mfhdLen, tfhdLen, tfdtLen = 16, 28, 20
 	trunLen := func(n int, firstFlags bool) int {
-		l := 8 + 4 + 4 + 4 + n*4 // verflags+count+data-offset + size*n
+		l := 8 + 4 + 4 + 4 + n*8 // verflags+count+data-offset + (duration+size)*n
 		if firstFlags {
 			l += 4
 		}
@@ -220,9 +226,9 @@ func repackFMP4(buf []byte, seq uint32) []byte {
 		b4(uint32(tl))
 		tag("trun")
 		if withFirst {
-			b4(0x000205) // data-offset + first-sample-flags + sample-size
+			b4(0x000305) // data-offset + first-sample-flags + sample-duration + sample-size
 		} else {
-			b4(0x000201) // data-offset + sample-size
+			b4(0x000301) // data-offset + sample-duration + sample-size
 		}
 		b4(uint32(n))
 		b4(dataOffset)
@@ -230,6 +236,7 @@ func repackFMP4(buf []byte, seq uint32) []byte {
 			b4(smps[0].flags) // e.g. IDR sync flags on the first video sample
 		}
 		for _, s := range smps {
+			b4(s.dur) // real per-sample duration — keeps VFR timeline gapless
 			b4(uint32(len(s.data)))
 			dataOffset += uint32(len(s.data))
 		}

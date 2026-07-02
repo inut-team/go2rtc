@@ -107,6 +107,9 @@ func (s *Session) flush() {
 	}
 	seg := s.buffer
 	if _, ok := s.cons.(*mp4.Consumer); ok {
+		// Merge the per-sample moof/mdat pairs into a single movie fragment —
+		// iOS AVFoundation rejects segments made of ~100 one-frame fragments.
+		seg = repackFMP4(seg, uint32(s.seq)+1)
 		s.buffer = nil
 	} else {
 		// for TS important to start new segment with PAT/PMT header

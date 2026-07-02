@@ -31,6 +31,10 @@ func handlerWSHLS(tr *ws.Transport, msg *ws.Message) error {
 
 	session := NewSession(cons, defaultDuration)
 
+	// Same as handlerStream: fMP4 segments are cut on IDR boundaries.
+	// Without this the session never flushes and playback shows nothing.
+	cons.OnKeyframe = session.FlushSegment
+
 	session.alive = time.AfterFunc(keepalive, func() {
 		sessionsMu.Lock()
 		delete(sessions, session.id)

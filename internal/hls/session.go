@@ -14,13 +14,19 @@ import (
 	"github.com/AlexxIT/go2rtc/pkg/mp4"
 )
 
+// segWindow is how many flushed segments stay addressable by their sequence
+// number. Players (iOS Safari native, hls.js) may re-fetch or parallel-fetch a
+// segment; serving by absolute number keeps those requests consistent.
+const segWindow = 6
+
 type Session struct {
 	cons     core.Consumer
 	id       string
 	template string
 	init     []byte
 	buffer   []byte
-	segments chan []byte
+	segs     map[int][]byte // seq -> segment (last segWindow entries)
+	updated  chan struct{}  // closed+recreated on each flush to wake Segment waiters
 	duration float64
 	seq      int
 	alive    *time.Timer
@@ -36,7 +42,8 @@ func NewSession(cons core.Consumer, duration float64) *Session {
 		id:       core.RandString(8, 62),
 		cons:     cons,
 		duration: duration,
-		segments: make(chan []byte, 4),
+		segs:     map[int][]byte{},
+		updated:  make(chan struct{}),
 	}
 
 	durStr := strconv.FormatFloat(duration, 'f', 3, 64)
@@ -65,6 +72,8 @@ segment.m4s?id=` + s.id + `&n=%d`
 #EXT-X-VERSION:3
 #EXT-X-TARGETDURATION:` + targetDurStr + `
 #EXT-X-MEDIA-SEQUENCE:%d
+#EXTINF:` + durStr + `,
+segment.ts?id=` + s.id + `&n=%d
 #EXTINF:` + durStr + `,
 segment.ts?id=` + s.id + `&n=%d
 #EXTINF:` + durStr + `,
@@ -103,13 +112,12 @@ func (s *Session) flush() {
 		// for TS important to start new segment with PAT/PMT header
 		s.buffer = append([]byte(nil), s.init...)
 	}
+	s.segs[s.seq] = seg
+	delete(s.segs, s.seq-segWindow)
 	s.seq++
+	close(s.updated) // wake all Segment(n) waiters
+	s.updated = make(chan struct{})
 	s.mu.Unlock()
-
-	select {
-	case s.segments <- seg:
-	default: // drop oldest if queue full (client too slow)
-	}
 }
 
 // FlushSegment sends the current buffer as a segment immediately.
@@ -179,10 +187,16 @@ hls/playlist.m3u8?id=` + s.id)
 }
 
 func (s *Session) Playlist() []byte {
-	if _, ok := s.cons.(*mp4.Consumer); ok {
-		return []byte(fmt.Sprintf(s.template, s.seq, s.seq, s.seq+1, s.seq+2))
+	// List a 3-segment window ending at the newest flushed segment plus one
+	// pending — requests for the pending one long-poll in Segment(n), which
+	// keeps latency low without listing far-future segments.
+	s.mu.Lock()
+	start := s.seq - 2
+	s.mu.Unlock()
+	if start < 0 {
+		start = 0
 	}
-	return []byte(fmt.Sprintf(s.template, s.seq, s.seq, s.seq+1))
+	return []byte(fmt.Sprintf(s.template, start, start, start+1, start+2))
 }
 
 func (s *Session) Init() (init []byte) {
@@ -199,13 +213,29 @@ func (s *Session) Init() (init []byte) {
 	return
 }
 
-func (s *Session) Segment() []byte {
-	// Wait up to 30s so clients survive producer reconnect (~5-10s) without restarting.
-	// During normal operation segments arrive every ~0.5s so this doesn't add latency.
-	select {
-	case seg := <-s.segments:
-		return seg
-	case <-time.After(30 * time.Second):
-		return nil
+// Segment returns the segment with absolute sequence number n, waiting up to
+// 30s for it to be produced (long-poll; also survives producer reconnects).
+// Re-fetches of a recent n return the same bytes — required for iOS Safari
+// native HLS and hls.js, which may request a segment more than once.
+func (s *Session) Segment(n int) []byte {
+	deadline := time.After(30 * time.Second)
+	for {
+		s.mu.Lock()
+		seg, ok := s.segs[n]
+		tooOld := n < s.seq-segWindow
+		ch := s.updated
+		s.mu.Unlock()
+
+		if ok {
+			return seg
+		}
+		if tooOld || n < 0 {
+			return nil // already evicted — client fell too far behind
+		}
+		select {
+		case <-ch: // new segment flushed, re-check
+		case <-deadline:
+			return nil
+		}
 	}
 }

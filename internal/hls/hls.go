@@ -190,7 +190,9 @@ func handlerSegmentTS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sid := r.URL.Query().Get("id")
+	query := r.URL.Query()
+
+	sid := query.Get("id")
 	sessionsMu.RLock()
 	session := sessions[sid]
 	sessionsMu.RUnlock()
@@ -201,7 +203,11 @@ func handlerSegmentTS(w http.ResponseWriter, r *http.Request) {
 
 	session.alive.Reset(keepalive)
 
-	data := session.Segment()
+	n, err := strconv.Atoi(query.Get("n"))
+	if err != nil {
+		n = -1
+	}
+	data := session.Segment(n)
 	if data == nil {
 		log.Warn().Msgf("[hls] can't get segment %s", r.URL.RawQuery)
 		http.NotFound(w, r)
@@ -265,7 +271,11 @@ func handlerSegmentMP4(w http.ResponseWriter, r *http.Request) {
 
 	session.alive.Reset(keepalive)
 
-	data := session.Segment()
+	n, err := strconv.Atoi(query.Get("n"))
+	if err != nil {
+		n = -1
+	}
+	data := session.Segment(n)
 	if data == nil {
 		log.Warn().Msgf("[hls] can't get segment %s", r.URL.RawQuery)
 		http.NotFound(w, r)

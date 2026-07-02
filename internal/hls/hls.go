@@ -136,7 +136,7 @@ func handlerStream(w http.ResponseWriter, r *http.Request) {
 	// For fMP4: trigger a segment flush before each keyframe so every segment starts on
 	// an IDR boundary. Required by iOS AVFoundation / Apple HLS Authoring Spec for HEVC.
 	if mp4c, ok := cons.(*mp4.Consumer); ok {
-		mp4c.OnKeyframe = session.Flush
+		mp4c.OnKeyframe = session.FlushSegment
 	}
 
 	session.alive = time.AfterFunc(keepalive, func() {

@@ -46,13 +46,16 @@ func NewSession(cons core.Consumer, duration float64) *Session {
 	}
 	targetDurStr := strconv.Itoa(targetDur)
 
-	// two segments important for Chromecast
+	// At least 3 segments per Apple HLS authoring rules (live playlists with
+	// fewer may be rejected by iOS AVFoundation); also important for Chromecast.
 	if _, ok := cons.(*mp4.Consumer); ok {
 		s.template = `#EXTM3U
 #EXT-X-VERSION:6
 #EXT-X-TARGETDURATION:` + targetDurStr + `
 #EXT-X-MEDIA-SEQUENCE:%d
 #EXT-X-MAP:URI="init.mp4?id=` + s.id + `"
+#EXTINF:` + durStr + `,
+segment.m4s?id=` + s.id + `&n=%d
 #EXTINF:` + durStr + `,
 segment.m4s?id=` + s.id + `&n=%d
 #EXTINF:` + durStr + `,
@@ -109,9 +112,14 @@ func (s *Session) flush() {
 	}
 }
 
-// Flush sends the current buffer as a segment immediately.
+// FlushSegment sends the current buffer as a segment immediately.
 // Called by mp4.Consumer.OnKeyframe so fMP4 segments always start on an IDR boundary.
-func (s *Session) Flush() {
+//
+// IMPORTANT: must NOT be named "Flush" — core.WriteBuffer.Write does an
+// http.Flusher assertion on its destination writer and would then call it
+// after EVERY sample write, producing one segment per frame (~40 segments/s)
+// and making the HLS playlist slide faster than any player can follow.
+func (s *Session) FlushSegment() {
 	s.flush()
 }
 
@@ -171,6 +179,9 @@ hls/playlist.m3u8?id=` + s.id)
 }
 
 func (s *Session) Playlist() []byte {
+	if _, ok := s.cons.(*mp4.Consumer); ok {
+		return []byte(fmt.Sprintf(s.template, s.seq, s.seq, s.seq+1, s.seq+2))
+	}
 	return []byte(fmt.Sprintf(s.template, s.seq, s.seq, s.seq+1))
 }
 

@@ -1,7 +1,7 @@
 api:
   listen: :1984
 hls:
-  duration: 0.5
+  duration: 2.4
 log:
   level: info
 streams:

@@ -106,7 +106,9 @@ func RTPDepay(codec *core.Codec, handler core.HandlerFunc) core.HandlerFunc {
 
 		clone := *packet
 		clone.Version = h264.RTPPacketVersionAVC
-		clone.Payload = buf
+		// Dahua-style FUs can carry several slices separated by embedded
+		// Annex-B start codes; split them into proper AVCC NALUs.
+		clone.Payload = SplitEmbeddedAnnexB(buf)
 
 		buf = buf[:0]
 

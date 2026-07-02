@@ -1,6 +1,7 @@
 package h265
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/binary"
 
@@ -56,6 +57,61 @@ func Types(data []byte) []byte {
 		}
 	}
 	return types
+}
+
+// SplitEmbeddedAnnexB repairs AVCC payloads whose NALUs contain embedded
+// Annex-B start codes. Some camera firmwares (e.g. Dahua) pack ALL slices of
+// a picture into one RTP FU stream separated by start codes; naive FU
+// reassembly then yields one giant "NALU" that is really slice1 + 00000001 +
+// slice2. Lenient decoders (ffmpeg) resync on the start code, but strict ones
+// (iOS VideoToolbox) reject the sample - black video with working audio.
+// Emulation prevention guarantees 00 00 01 cannot occur inside a real NALU,
+// so splitting on it is safe. Returns the input unchanged when clean.
+func SplitEmbeddedAnnexB(avcc []byte) []byte {
+	dirty := false
+	for i := 0; i+4 <= len(avcc); {
+		size := int(binary.BigEndian.Uint32(avcc[i:]))
+		end := i + 4 + size
+		if size == 0 || end > len(avcc) {
+			return avcc // malformed - leave untouched
+		}
+		if bytes.Index(avcc[i+4:end], []byte{0, 0, 1}) >= 0 {
+			dirty = true
+			break
+		}
+		i = end
+	}
+	if !dirty {
+		return avcc
+	}
+
+	out := make([]byte, 0, len(avcc))
+	for i := 0; i+4 <= len(avcc); {
+		size := int(binary.BigEndian.Uint32(avcc[i:]))
+		end := i + 4 + size
+		nal := avcc[i+4 : end]
+		start := 0
+		for {
+			idx := bytes.Index(nal[start:], []byte{0, 0, 1})
+			if idx < 0 {
+				break
+			}
+			cut := start + idx
+			pieceEnd := cut
+			if pieceEnd > 0 && nal[pieceEnd-1] == 0 { // 4-byte start code
+				pieceEnd--
+			}
+			if pieceEnd > start {
+				out = binary.BigEndian.AppendUint32(out, uint32(pieceEnd-start))
+				out = append(out, nal[start:pieceEnd]...)
+			}
+			start = cut + 3
+		}
+		out = binary.BigEndian.AppendUint32(out, uint32(len(nal)-start))
+		out = append(out, nal[start:]...)
+		i = end
+	}
+	return out
 }
 
 // ExtractParamSets scans AVCC-format H265 data and returns the raw VPS, SPS, and PPS NAL units.

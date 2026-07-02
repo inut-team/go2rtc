@@ -207,30 +207,7 @@ func repackFMP4(buf []byte, seq uint32) []byte {
 	for _, tid := range order {
 		smps := samples[tid]
 		n := len(smps)
-		_, defFlags := mode(smps)
-
-		// CFR normalization. Many cameras (e.g. the Xiaomi cam3 / cam3_2nd)
-		// deliver juddery RTP timestamps — per-frame gaps alternate ~20ms/~40ms
-		// even though the long-term rate is steady ~30fps — so motion visibly
-		// stutters no matter how good the player is. Instead of hardcoding
-		// per-model rules, we read the timing from the segment itself: sum the
-		// real sample durations (= the true segment span, which tfdt of the next
-		// segment advances by) and spread it EVENLY across the samples. Frames
-		// become evenly spaced (smooth) while the total span is unchanged, so
-		// the timeline stays gapless. True-CBR cameras (Dahua: every gap already
-		// equal) come out identical to before — this adapts automatically.
-		var total uint64
-		for _, s := range smps {
-			total += uint64(s.dur)
-		}
-		base := uint32(total / uint64(n))
-		rem := int(total % uint64(n)) // spread the remainder over the first samples so durations sum EXACTLY to total
-		evenDur := func(i int) uint32 {
-			if i < rem {
-				return base + 1
-			}
-			return base
-		}
+		defDur, defFlags := mode(smps)
 
 		withFirst := smps[0].flags != smps[n-1].flags
 		tl := trunLen(n, withFirst)
@@ -240,7 +217,7 @@ func repackFMP4(buf []byte, seq uint32) []byte {
 		tag("tfhd")
 		b4(0x020038) // base-is-moof | default duration+size+flags present
 		b4(tid)
-		b4(base)
+		b4(defDur)
 		b4(uint32(len(smps[0].data)))
 		b4(defFlags)
 		b4(tfdtLen)
@@ -259,8 +236,8 @@ func repackFMP4(buf []byte, seq uint32) []byte {
 		if withFirst {
 			b4(smps[0].flags) // e.g. IDR sync flags on the first video sample
 		}
-		for i, s := range smps {
-			b4(evenDur(i)) // evenly spaced → smooth motion; sums to real total → gapless
+		for _, s := range smps {
+			b4(s.dur) // real per-sample duration (VFR) — matches ffmpeg -c copy, keeps timeline gapless
 			b4(uint32(len(s.data)))
 			dataOffset += uint32(len(s.data))
 		}

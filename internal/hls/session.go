@@ -33,6 +33,7 @@ type Session struct {
 	isMP4     bool
 	lastFlush time.Time // wall-clock of the previous flush, to measure GOP length
 	lastDur   float64   // last measured segment duration (estimate for pending segment)
+	targetDur int       // stable EXT-X-TARGETDURATION (monotonic; Safari requires it constant)
 	alive     *time.Timer
 	mu        sync.Mutex
 }
@@ -57,6 +58,7 @@ func NewSession(cons core.Consumer, duration float64) *Session {
 		targetDur = 1
 	}
 	targetDurStr := strconv.Itoa(targetDur)
+	s.targetDur = targetDur
 
 	// At least 3 segments per Apple HLS authoring rules (live playlists with
 	// fewer may be rejected by iOS AVFoundation); also important for Chromecast.
@@ -222,52 +224,30 @@ func (s *Session) Playlist() []byte {
 		return []byte(fmt.Sprintf(s.template, start, start, start+1, start+2))
 	}
 
-	// fMP4: emit the real measured per-segment EXTINF. The not-yet-flushed
-	// pending segment (start+2) has no measurement yet, so estimate it from the
-	// last measured GOP (falling back to the declared duration at startup).
-	dur := func(n int) float64 {
-		if d, ok := s.segDurs[n]; ok {
-			return d
-		}
-		if s.lastDur > 0 {
-			return s.lastDur
-		}
-		return s.duration
-	}
-	d0, d1, d2 := dur(start), dur(start+1), dur(start+2)
-
-	// TARGETDURATION must be >= every listed EXTINF (Apple HLS spec).
-	target := s.duration
-	for _, d := range []float64{d0, d1, d2} {
-		if d > target {
-			target = d
-		}
-	}
-	targetDur := int(math.Ceil(target))
-	if targetDur < 1 {
-		targetDur = 1
-	}
-
+	// fMP4: keep EXTINF and TARGETDURATION CONSTANT across reloads. Safari
+	// native HLS stalls (loads one frame then spins) if a segment's advertised
+	// duration or the target duration changes between playlist fetches. Smooth
+	// playback is driven by the real per-sample durations in the media (see
+	// repackFMP4), NOT by EXTINF — which is only a scheduling hint — so we
+	// advertise the nominal duration and let the media timeline drive timing.
+	durStr := strconv.FormatFloat(s.duration, 'f', 3, 64)
 	var b strings.Builder
 	b.WriteString("#EXTM3U\n#EXT-X-VERSION:6\n#EXT-X-TARGETDURATION:")
-	b.WriteString(strconv.Itoa(targetDur))
+	b.WriteString(strconv.Itoa(s.targetDur))
 	b.WriteString("\n#EXT-X-MEDIA-SEQUENCE:")
 	b.WriteString(strconv.Itoa(start))
 	b.WriteString("\n#EXT-X-MAP:URI=\"init.mp4?id=")
 	b.WriteString(s.id)
 	b.WriteString("\"\n")
-	writeSeg := func(n int, d float64) {
+	for _, n := range []int{start, start + 1, start + 2} {
 		b.WriteString("#EXTINF:")
-		b.WriteString(strconv.FormatFloat(d, 'f', 3, 64))
+		b.WriteString(durStr)
 		b.WriteString(",\nsegment.m4s?id=")
 		b.WriteString(s.id)
 		b.WriteString("&n=")
 		b.WriteString(strconv.Itoa(n))
 		b.WriteByte('\n')
 	}
-	writeSeg(start, d0)
-	writeSeg(start+1, d1)
-	writeSeg(start+2, d2)
 	return []byte(b.String())
 }
 

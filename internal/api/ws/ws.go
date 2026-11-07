@@ -22,13 +22,15 @@ func Init() {
 			Origin string `yaml:"origin"`
 		} `yaml:"api"`
 	}
-
+	cfg.Mod.Origin = "*"
 	app.LoadConfig(&cfg)
+	if cfg.Mod.Origin == "" {
+		cfg.Mod.Origin = "*"
+	}
 
 	log = app.GetLogger("api")
 
 	initWS(cfg.Mod.Origin)
-
 	api.HandleFunc("api/ws", apiWS)
 }
 

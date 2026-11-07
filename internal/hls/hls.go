@@ -93,16 +93,26 @@ func hlsDefaultMedias() []*core.Media {
 	}
 }
 
-func handlerStream(w http.ResponseWriter, r *http.Request) {
-	// CORS important for Chromecast
+func setHLSCORS(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS, HEAD")
+	if reqHdrs := r.Header.Get("Access-Control-Request-Headers"); reqHdrs != "" {
+		w.Header().Set("Access-Control-Allow-Headers", reqHdrs)
+	} else {
+		w.Header().Set("Access-Control-Allow-Headers", "*, Authorization, Content-Type, Range, X-Requested-With, X-Shinobi-Token")
+	}
+	w.Header().Set("Access-Control-Expose-Headers", "Content-Length, Content-Range, Accept-Ranges")
+}
+
+func handlerStream(w http.ResponseWriter, r *http.Request) {
+	// CORS important for Chromecast & Capacitor WebView
+	setHLSCORS(w, r)
 	w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
 
 	if r.Method == "OPTIONS" {
-		w.Header().Set("Access-Control-Allow-Methods", "GET")
+		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-
 	src := r.URL.Query().Get("src")
 	stream := streams.Get(src)
 	if stream == nil {
@@ -179,14 +189,13 @@ func handlerStream(w http.ResponseWriter, r *http.Request) {
 }
 
 func handlerPlaylist(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Access-Control-Allow-Origin", "*")
+	setHLSCORS(w, r)
 	w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
 
 	if r.Method == "OPTIONS" {
-		w.Header().Set("Access-Control-Allow-Methods", "GET")
+		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-
 	sid := r.URL.Query().Get("id")
 	sessionsMu.RLock()
 	session := sessions[sid]
@@ -202,14 +211,13 @@ func handlerPlaylist(w http.ResponseWriter, r *http.Request) {
 }
 
 func handlerSegmentTS(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Access-Control-Allow-Origin", "*")
+	setHLSCORS(w, r)
 	w.Header().Set("Content-Type", "video/mp2t")
 
 	if r.Method == "OPTIONS" {
-		w.Header().Set("Access-Control-Allow-Methods", "GET")
+		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-
 	query := r.URL.Query()
 
 	sid := query.Get("id")
@@ -240,14 +248,13 @@ func handlerSegmentTS(w http.ResponseWriter, r *http.Request) {
 }
 
 func handlerInit(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Access-Control-Allow-Origin", "*")
+	setHLSCORS(w, r)
 	w.Header().Add("Content-Type", "video/mp4")
 
 	if r.Method == "OPTIONS" {
-		w.Header().Set("Access-Control-Allow-Methods", "GET")
+		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-
 	sid := r.URL.Query().Get("id")
 	sessionsMu.RLock()
 	session := sessions[sid]
@@ -270,14 +277,13 @@ func handlerInit(w http.ResponseWriter, r *http.Request) {
 }
 
 func handlerSegmentMP4(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Access-Control-Allow-Origin", "*")
+	setHLSCORS(w, r)
 	w.Header().Add("Content-Type", "video/iso.segment")
 
 	if r.Method == "OPTIONS" {
-		w.Header().Set("Access-Control-Allow-Methods", "GET")
+		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-
 	query := r.URL.Query()
 
 	sid := query.Get("id")

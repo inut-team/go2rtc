@@ -37,12 +37,15 @@ func Init() {
 		} `yaml:"api"`
 	}
 
-	// default config
+	// default config (always enable CORS * by default for KSP Edge / WebView / HLS players)
 	cfg.Mod.Listen = ":1984"
+	cfg.Mod.Origin = "*"
 
 	// load config from YAML
 	app.LoadConfig(&cfg)
-
+	if cfg.Mod.Origin == "" {
+		cfg.Mod.Origin = "*"
+	}
 	if cfg.Mod.Listen == "" && cfg.Mod.UnixListen == "" && cfg.Mod.TLSListen == "" {
 		return
 	}
@@ -61,14 +64,13 @@ func Init() {
 
 	Handler = http.DefaultServeMux // 4th
 
-	if cfg.Mod.Origin == "*" {
-		Handler = middlewareCORS(Handler) // 3rd
-	}
-
 	if cfg.Mod.Username != "" {
-		Handler = middlewareAuth(cfg.Mod.Username, cfg.Mod.Password, cfg.Mod.LocalAuth, Handler) // 2nd
+		Handler = middlewareAuth(cfg.Mod.Username, cfg.Mod.Password, cfg.Mod.LocalAuth, Handler) // 3rd
 	}
 
+	if cfg.Mod.Origin == "*" {
+		Handler = middlewareCORS(Handler) // 2nd (wraps auth so OPTIONS preflight & 401 include CORS headers)
+	}
 	if log.Trace().Enabled() {
 		Handler = middlewareLog(Handler) // 1st
 	}
@@ -227,8 +229,17 @@ func middlewareAuth(username, password string, localAuth bool, next http.Handler
 func middlewareCORS(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS, HEAD")
+		if reqHdrs := r.Header.Get("Access-Control-Request-Headers"); reqHdrs != "" {
+			w.Header().Set("Access-Control-Allow-Headers", reqHdrs)
+		} else {
+			w.Header().Set("Access-Control-Allow-Headers", "*, Authorization, Content-Type, Range, X-Requested-With, X-Shinobi-Token")
+		}
+		w.Header().Set("Access-Control-Expose-Headers", "Content-Length, Content-Range, Accept-Ranges")
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
 		next.ServeHTTP(w, r)
 	})
 }
